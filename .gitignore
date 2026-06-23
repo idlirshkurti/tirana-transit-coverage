@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+.env
+
+# Dagster
+/logs/
+*.db
+dagster_home/
+
+# Data (raw files tracked separately or in blob storage)
+data/raw/
+data/processed/
+*.parquet
+*.gpkg
+*.geojson
+
+# Docker
+.docker/
+
+# IDE
+.vscode/
+.idea/
+*.swp
