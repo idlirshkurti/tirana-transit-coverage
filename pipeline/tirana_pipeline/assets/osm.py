@@ -2,20 +2,22 @@
 
 import geopandas as gpd
 from dagster import AssetExecutionContext, asset
+from shapely.geometry import MultiPolygon
 from sqlalchemy import text
+
+from tirana_pipeline.resources import DatabaseResource
 
 
 @asset(group_name="ingestion", description="Fetch Tirana neighbourhood boundaries from OSM")
 def tirana_neighbourhoods(context: AssetExecutionContext) -> gpd.GeoDataFrame:
     """
     Use osmnx to pull admin level 9/10 boundaries within Tirana municipality.
-    Falls back to a bounding-box approach if named boundaries are sparse.
+    Falls back to level 10 if level 9 returns no results.
     """
     import osmnx as ox
 
     context.log.info("Fetching Tirana admin boundaries from OSM")
 
-    # Try suburb-level boundaries first (admin_level=9 in Albania)
     tags = {"boundary": "administrative", "admin_level": "9"}
     try:
         gdf = ox.features_from_place("Tirana, Albania", tags=tags)
@@ -44,7 +46,7 @@ def tirana_neighbourhoods(context: AssetExecutionContext) -> gpd.GeoDataFrame:
 def neighbourhoods_to_postgis(
     context: AssetExecutionContext,
     tirana_neighbourhoods: gpd.GeoDataFrame,
-    db: "DatabaseResource",  # type: ignore[name-defined]
+    db: DatabaseResource,
 ) -> None:
     """Persist neighbourhood polygons to PostGIS `neighbourhoods` table."""
     engine = db.get_engine()
@@ -66,7 +68,6 @@ def neighbourhoods_to_postgis(
     for _, row in tirana_neighbourhoods.iterrows():
         geom = row.geometry
         if geom.geom_type == "Polygon":
-            from shapely.geometry import MultiPolygon
             geom = MultiPolygon([geom])
         rows.append({
             "neighbourhood_id": row.neighbourhood_id,
@@ -78,8 +79,11 @@ def neighbourhoods_to_postgis(
         conn.execute(
             text("""
                 INSERT INTO neighbourhoods (neighbourhood_id, name, geom)
-                VALUES (:neighbourhood_id, :name,
-                        ST_Multi(ST_GeomFromText(:geom, 4326)))
+                VALUES (
+                    :neighbourhood_id,
+                    :name,
+                    ST_Multi(ST_GeomFromText(:geom, 4326))
+                )
                 ON CONFLICT (neighbourhood_id) DO UPDATE
                     SET name = EXCLUDED.name,
                         geom = EXCLUDED.geom;

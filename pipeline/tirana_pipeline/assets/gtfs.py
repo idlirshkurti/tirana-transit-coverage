@@ -8,9 +8,10 @@ import geopandas as gpd
 import pandas as pd
 import requests
 from dagster import AssetExecutionContext, asset
-from geoalchemy2 import Geometry, WKTElement
-from shapely.geometry import Point
+from geoalchemy2 import WKTElement
 from sqlalchemy import text
+
+from tirana_pipeline.resources import DatabaseResource
 
 GTFS_URL = "https://pt.tirana.al/gtfs/gtfs.zip"
 RAW_DIR = Path("/data/raw/gtfs")
@@ -71,12 +72,11 @@ def gtfs_routes(context: AssetExecutionContext, gtfs_raw: bytes) -> pd.DataFrame
 def stops_to_postgis(
     context: AssetExecutionContext,
     gtfs_stops: gpd.GeoDataFrame,
-    db: "DatabaseResource",  # type: ignore[name-defined]
+    db: DatabaseResource,
 ) -> None:
     """Upsert GTFS stops into the PostGIS `stops` table."""
     engine = db.get_engine()
 
-    # Reproject to UTM 34N for accurate distance calculations later
     stops_utm = gtfs_stops.to_crs("EPSG:32634")
 
     with engine.begin() as conn:
@@ -88,8 +88,10 @@ def stops_to_postgis(
                     geom       GEOMETRY(Point, 4326),
                     geom_utm   GEOMETRY(Point, 32634)
                 );
-                CREATE INDEX IF NOT EXISTS stops_geom_idx ON stops USING GIST (geom);
-                CREATE INDEX IF NOT EXISTS stops_geom_utm_idx ON stops USING GIST (geom_utm);
+                CREATE INDEX IF NOT EXISTS stops_geom_idx
+                    ON stops USING GIST (geom);
+                CREATE INDEX IF NOT EXISTS stops_geom_utm_idx
+                    ON stops USING GIST (geom_utm);
             """)
         )
 
@@ -107,7 +109,12 @@ def stops_to_postgis(
         conn.execute(
             text("""
                 INSERT INTO stops (stop_id, stop_name, geom, geom_utm)
-                VALUES (:stop_id, :stop_name, ST_GeomFromText(:geom, 4326), ST_GeomFromText(:geom_utm, 32634))
+                VALUES (
+                    :stop_id,
+                    :stop_name,
+                    ST_GeomFromText(:geom, 4326),
+                    ST_GeomFromText(:geom_utm, 32634)
+                )
                 ON CONFLICT (stop_id) DO UPDATE
                     SET stop_name = EXCLUDED.stop_name,
                         geom      = EXCLUDED.geom,

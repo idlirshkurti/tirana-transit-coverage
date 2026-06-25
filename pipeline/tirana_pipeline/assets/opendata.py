@@ -1,6 +1,7 @@
 """Open Data Albania ingestion assets — businesses and education datasets."""
 
 import io
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -8,9 +9,10 @@ import requests
 from dagster import AssetExecutionContext, asset
 from sqlalchemy import text
 
+from tirana_pipeline.resources import DatabaseResource
+
 RAW_DIR = Path("/data/raw/opendata")
 
-# CSV download URLs from opendata.gov.al (QKB business datasets)
 BUSINESS_BY_REGION_URL = (
     "https://opendata.gov.al/files/Dataset/service/"
     "a9b8b467-a32d-4001-8077-c70e29819cd2/"
@@ -68,13 +70,13 @@ def businesses_by_legal_form(context: AssetExecutionContext) -> pd.DataFrame:
 
 
 @asset(
-    group_name="ingestion",
+    group_name="storage",
     description="Store businesses-by-region in PostGIS for spatial join in Phase 2",
 )
 def businesses_to_db(
     context: AssetExecutionContext,
     businesses_by_region: pd.DataFrame,
-    db: "DatabaseResource",  # type: ignore[name-defined]
+    db: DatabaseResource,
 ) -> None:
     """
     Persist the region-level business counts to a staging table.
@@ -82,7 +84,6 @@ def businesses_to_db(
     """
     engine = db.get_engine()
 
-    # Normalise column names to lowercase/underscore
     df = businesses_by_region.copy()
     df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
 
@@ -97,7 +98,6 @@ def businesses_to_db(
         )
         conn.execute(text("TRUNCATE staging_businesses_by_region;"))
 
-    import json
     rows = [
         {"region": str(row.get("region", idx)), "data": json.dumps(row.to_dict())}
         for idx, row in df.iterrows()

@@ -1,9 +1,10 @@
+"""Dagster resources — database connection."""
+
 import os
-from dagster import EnvVar
-from dagster_postgres import PostgresRunStorage
+
+from dagster import ConfigurableResource
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
-from dagster import ConfigurableResource
 
 
 class DatabaseResource(ConfigurableResource):
