@@ -1,8 +1,8 @@
 """Dagster resources — MotherDuck (DuckDB) connection."""
 
 import os
+from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Generator
 
 import duckdb
 from dagster import ConfigurableResource
