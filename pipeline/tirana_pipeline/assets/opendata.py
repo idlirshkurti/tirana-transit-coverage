@@ -7,9 +7,8 @@ from pathlib import Path
 import pandas as pd
 import requests
 from dagster import AssetExecutionContext, asset
-from sqlalchemy import text
 
-from tirana_pipeline.resources import DatabaseResource
+from tirana_pipeline.resources import MotherDuckResource
 
 RAW_DIR = Path("/data/raw/opendata")
 
@@ -71,44 +70,29 @@ def businesses_by_legal_form(context: AssetExecutionContext) -> pd.DataFrame:
 
 @asset(
     group_name="storage",
-    description="Store businesses-by-region in PostGIS for spatial join in Phase 2",
+    description="Store businesses-by-region in MotherDuck for spatial join in Phase 2",
 )
 def businesses_to_db(
     context: AssetExecutionContext,
     businesses_by_region: pd.DataFrame,
-    db: DatabaseResource,
+    db: MotherDuckResource,
 ) -> None:
     """
-    Persist the region-level business counts to a staging table.
+    Persist the region-level business counts to a staging table in MotherDuck.
     Phase 2 will spatially disaggregate these onto neighbourhood polygons.
     """
-    engine = db.get_engine()
-
     df = businesses_by_region.copy()
     df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
 
-    with engine.begin() as conn:
-        conn.execute(
-            text("""
-                CREATE TABLE IF NOT EXISTS staging_businesses_by_region (
-                    region  TEXT,
-                    data    JSONB
-                );
-            """)
-        )
-        conn.execute(text("TRUNCATE staging_businesses_by_region;"))
-
     rows = [
-        {"region": str(row.get("region", idx)), "data": json.dumps(row.to_dict())}
+        (str(row.get("region", str(idx))), json.dumps(row.to_dict()))
         for idx, row in df.iterrows()
     ]
 
-    with engine.begin() as conn:
-        conn.execute(
-            text("""
-                INSERT INTO staging_businesses_by_region (region, data)
-                VALUES (:region, :data::jsonb)
-            """),
+    with db.get_connection() as conn:
+        conn.execute("DELETE FROM staging_businesses_by_region;")
+        conn.executemany(
+            "INSERT INTO staging_businesses_by_region (region, data) VALUES (?, ?::JSON)",
             rows,
         )
 

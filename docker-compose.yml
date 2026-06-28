@@ -1,42 +1,21 @@
 version: "3.9"
 
 services:
-  db:
-    image: postgis/postgis:16-3.4
-    container_name: tirana_db
-    environment:
-      POSTGRES_DB: tirana
-      POSTGRES_USER: dev
-      POSTGRES_PASSWORD: dev
-    ports:
-      - "5432:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-      - ./pipeline/sql/init.sql:/docker-entrypoint-initdb.d/init.sql
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U dev -d tirana"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
   dagster:
     build:
       context: ./pipeline
       dockerfile: Dockerfile
     container_name: tirana_dagster
+    env_file:
+      - .env
     environment:
       DAGSTER_HOME: /opt/dagster/dagster_home
-      DATABASE_URL: postgresql://dev:dev@db:5432/tirana
     ports:
       - "3000:3000"
-    depends_on:
-      db:
-        condition: service_healthy
     volumes:
       - ./pipeline:/app
       - ./data:/data
       - dagster_home:/opt/dagster/dagster_home
 
 volumes:
-  pgdata:
   dagster_home:

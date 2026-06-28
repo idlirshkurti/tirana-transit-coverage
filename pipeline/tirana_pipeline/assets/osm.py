@@ -3,9 +3,8 @@
 import geopandas as gpd
 from dagster import AssetExecutionContext, asset
 from shapely.geometry import MultiPolygon
-from sqlalchemy import text
 
-from tirana_pipeline.resources import DatabaseResource
+from tirana_pipeline.resources import MotherDuckResource
 
 
 @asset(group_name="ingestion", description="Fetch Tirana neighbourhood boundaries from OSM")
@@ -41,54 +40,36 @@ def tirana_neighbourhoods(context: AssetExecutionContext) -> gpd.GeoDataFrame:
 
 @asset(
     group_name="storage",
-    description="Write neighbourhood boundaries to PostGIS",
+    description="Write neighbourhood boundaries to MotherDuck (DuckDB spatial)",
 )
-def neighbourhoods_to_postgis(
+def neighbourhoods_to_motherduck(
     context: AssetExecutionContext,
     tirana_neighbourhoods: gpd.GeoDataFrame,
-    db: DatabaseResource,
+    db: MotherDuckResource,
 ) -> None:
-    """Persist neighbourhood polygons to PostGIS `neighbourhoods` table."""
-    engine = db.get_engine()
-
-    with engine.begin() as conn:
-        conn.execute(
-            text("""
-                CREATE TABLE IF NOT EXISTS neighbourhoods (
-                    neighbourhood_id  TEXT PRIMARY KEY,
-                    name              TEXT,
-                    geom              GEOMETRY(MultiPolygon, 4326)
-                );
-                CREATE INDEX IF NOT EXISTS neighbourhoods_geom_idx
-                    ON neighbourhoods USING GIST (geom);
-            """)
-        )
-
+    """Persist neighbourhood polygons to MotherDuck `neighbourhoods` table."""
     rows = []
     for _, row in tirana_neighbourhoods.iterrows():
         geom = row.geometry
         if geom.geom_type == "Polygon":
             geom = MultiPolygon([geom])
-        rows.append({
-            "neighbourhood_id": row.neighbourhood_id,
-            "name": row["name"],
-            "geom": geom.wkt,
-        })
+        rows.append((
+            str(row.neighbourhood_id),
+            str(row["name"]),
+            geom.wkt,
+        ))
 
-    with engine.begin() as conn:
-        conn.execute(
-            text("""
-                INSERT INTO neighbourhoods (neighbourhood_id, name, geom)
-                VALUES (
-                    :neighbourhood_id,
-                    :name,
-                    ST_Multi(ST_GeomFromText(:geom, 4326))
-                )
-                ON CONFLICT (neighbourhood_id) DO UPDATE
-                    SET name = EXCLUDED.name,
-                        geom = EXCLUDED.geom;
-            """),
+    with db.get_connection() as conn:
+        conn.execute("DELETE FROM neighbourhoods;")
+        conn.executemany(
+            """
+            INSERT INTO neighbourhoods (neighbourhood_id, name, geom)
+            VALUES (?, ?, ST_GeomFromText(?, 4326))
+            ON CONFLICT (neighbourhood_id) DO UPDATE SET
+                name = excluded.name,
+                geom = excluded.geom
+            """,
             rows,
         )
 
-    context.log.info(f"Upserted {len(rows)} neighbourhoods into PostGIS")
+    context.log.info(f"Upserted {len(rows)} neighbourhoods into MotherDuck")

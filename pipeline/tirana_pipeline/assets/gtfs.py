@@ -1,4 +1,4 @@
-"""GTFS ingestion asset — downloads Tirana bus feed and stores stops + routes to PostGIS."""
+"""GTFS ingestion asset — downloads Tirana bus feed and stores stops + routes to MotherDuck."""
 
 import io
 import zipfile
@@ -8,10 +8,8 @@ import geopandas as gpd
 import pandas as pd
 import requests
 from dagster import AssetExecutionContext, asset
-from geoalchemy2 import WKTElement
-from sqlalchemy import text
 
-from tirana_pipeline.resources import DatabaseResource
+from tirana_pipeline.resources import MotherDuckResource
 
 GTFS_URL = "https://pt.tirana.al/gtfs/gtfs.zip"
 RAW_DIR = Path("/data/raw/gtfs")
@@ -66,61 +64,39 @@ def gtfs_routes(context: AssetExecutionContext, gtfs_raw: bytes) -> pd.DataFrame
 
 @asset(
     group_name="storage",
-    description="Write GTFS stops to PostGIS table",
-    deps=["gtfs_stops"],
+    description="Write GTFS stops to MotherDuck (DuckDB spatial)",
 )
-def stops_to_postgis(
+def stops_to_motherduck(
     context: AssetExecutionContext,
     gtfs_stops: gpd.GeoDataFrame,
-    db: DatabaseResource,
+    db: MotherDuckResource,
 ) -> None:
-    """Upsert GTFS stops into the PostGIS `stops` table."""
-    engine = db.get_engine()
-
+    """Upsert GTFS stops into the MotherDuck `stops` table using DuckDB spatial."""
+    # Reproject to UTM 34N for metric distance calculations
     stops_utm = gtfs_stops.to_crs("EPSG:32634")
 
-    with engine.begin() as conn:
-        conn.execute(
-            text("""
-                CREATE TABLE IF NOT EXISTS stops (
-                    stop_id    TEXT PRIMARY KEY,
-                    stop_name  TEXT,
-                    geom       GEOMETRY(Point, 4326),
-                    geom_utm   GEOMETRY(Point, 32634)
-                );
-                CREATE INDEX IF NOT EXISTS stops_geom_idx
-                    ON stops USING GIST (geom);
-                CREATE INDEX IF NOT EXISTS stops_geom_utm_idx
-                    ON stops USING GIST (geom_utm);
-            """)
-        )
-
     rows = [
-        {
-            "stop_id": row.stop_id,
-            "stop_name": row.stop_name,
-            "geom": WKTElement(row.geometry.wkt, srid=4326),
-            "geom_utm": WKTElement(stops_utm.loc[idx].geometry.wkt, srid=32634),
-        }
+        (
+            str(row.stop_id),
+            str(row.stop_name),
+            row.geometry.wkt,          # WGS84
+            stops_utm.loc[idx].geometry.wkt,  # UTM 34N
+        )
         for idx, row in gtfs_stops.iterrows()
     ]
 
-    with engine.begin() as conn:
-        conn.execute(
-            text("""
-                INSERT INTO stops (stop_id, stop_name, geom, geom_utm)
-                VALUES (
-                    :stop_id,
-                    :stop_name,
-                    ST_GeomFromText(:geom, 4326),
-                    ST_GeomFromText(:geom_utm, 32634)
-                )
-                ON CONFLICT (stop_id) DO UPDATE
-                    SET stop_name = EXCLUDED.stop_name,
-                        geom      = EXCLUDED.geom,
-                        geom_utm  = EXCLUDED.geom_utm;
-            """),
+    with db.get_connection() as conn:
+        conn.execute("DELETE FROM stops;")
+        conn.executemany(
+            """
+            INSERT INTO stops (stop_id, stop_name, geom, geom_utm)
+            VALUES (?, ?, ST_GeomFromText(?, 4326), ST_GeomFromText(?, 32634))
+            ON CONFLICT (stop_id) DO UPDATE SET
+                stop_name = excluded.stop_name,
+                geom      = excluded.geom,
+                geom_utm  = excluded.geom_utm
+            """,
             rows,
         )
 
-    context.log.info(f"Upserted {len(rows)} stops into PostGIS")
+    context.log.info(f"Upserted {len(rows)} stops into MotherDuck")

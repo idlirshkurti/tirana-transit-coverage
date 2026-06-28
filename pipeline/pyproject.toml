@@ -4,22 +4,20 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tirana-pipeline"
-version = "0.1.0"
+version = "0.2.0"
 description = "Dagster pipeline for Tirana transit coverage analysis"
 requires-python = ">=3.11"
 dependencies = [
     "dagster>=1.7",
     "dagster-webserver>=1.7",
-    "dagster-postgres>=0.23",
+    "dagster-duckdb>=0.23",
+    "duckdb>=1.1",
     "geopandas>=0.14",
     "shapely>=2.0",
     "osmnx>=1.9",
     "gtfs-kit>=6.0",
     "pandas>=2.0",
     "requests>=2.31",
-    "sqlalchemy>=2.0",
-    "geoalchemy2>=0.14",
-    "psycopg2-binary>=2.9",
     "pyarrow>=14.0",
 ]
 
