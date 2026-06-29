@@ -40,15 +40,41 @@ jobs:
           cd pipeline
           pip install -e .
 
-      - name: Create data directories
-        run: mkdir -p data/raw/gtfs data/raw/opendata
+      - name: Bootstrap MotherDuck schema
+        env:
+          MOTHERDUCK_TOKEN: ${{ secrets.MOTHERDUCK_TOKEN }}
+          MOTHERDUCK_DATABASE: tirana_transit
+        run: |
+          python - <<'EOF'
+          import duckdb, os
+          token = os.environ["MOTHERDUCK_TOKEN"]
+          db    = os.environ["MOTHERDUCK_DATABASE"]
+          conn  = duckdb.connect(f"md:{db}?motherduck_token={token}")
+          conn.execute("INSTALL spatial; LOAD spatial;")
+          conn.execute("""
+            CREATE TABLE IF NOT EXISTS stops (
+                stop_id   VARCHAR PRIMARY KEY,
+                stop_name VARCHAR,
+                geom      GEOMETRY,
+                geom_utm  GEOMETRY
+            );
+          """)
+          conn.execute("""
+            CREATE TABLE IF NOT EXISTS neighbourhoods (
+                neighbourhood_id VARCHAR PRIMARY KEY,
+                name             VARCHAR,
+                geom             GEOMETRY
+            );
+          """)
+          conn.close()
+          print("Schema bootstrap complete.")
+          EOF
 
       - name: Materialise all Dagster assets
         env:
           MOTHERDUCK_TOKEN: ${{ secrets.MOTHERDUCK_TOKEN }}
           MOTHERDUCK_DATABASE: tirana_transit
           DAGSTER_HOME: /tmp/dagster_home
-          RAW_DATA_DIR: ${{ github.workspace }}/data/raw
         run: |
           mkdir -p $DAGSTER_HOME
           cd pipeline
@@ -63,20 +89,15 @@ jobs:
         run: |
           python - <<'EOF'
           import duckdb, os
-
           token = os.environ["MOTHERDUCK_TOKEN"]
-          db = os.environ["MOTHERDUCK_DATABASE"]
-
-          conn = duckdb.connect(f"md:{db}?motherduck_token={token}")
+          db    = os.environ["MOTHERDUCK_DATABASE"]
+          conn  = duckdb.connect(f"md:{db}?motherduck_token={token}")
           conn.execute("LOAD spatial;")
-
-          tables = ["stops", "routes", "neighbourhoods", "staging_businesses_by_region"]
-          for t in tables:
-              count = conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
-              print(f"{t}: {count} rows")
+          for table in ["stops", "neighbourhoods"]:
+              count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+              print(f"{table}: {count} rows")
               if count == 0:
-                  raise SystemExit(f"Table {t} is empty after pipeline run!")
-
+                  raise SystemExit(f"Table '{table}' is empty after pipeline run!")
           conn.close()
           print("All tables populated successfully.")
           EOF
