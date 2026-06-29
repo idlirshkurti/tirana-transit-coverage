@@ -1,14 +1,23 @@
-"""Open Data Albania ingestion assets — businesses and education datasets."""
+"""Open Data Albania ingestion assets.
+
+SCOPE NOTE (updated): The project now focuses exclusively on Tirana's
+11 Municipal Units (Njësia Bashkiake Nr. 1-11).  The QKB business-count
+datasets below are aggregated at Albanian *region* level (e.g. "Tiranë"
+as a whole) and cannot be disaggregated to individual municipal units.
+These assets are retained for reference but are excluded from the active
+Dagster asset graph until unit-level POI data (e.g. OSM amenities or a
+finer-grained QKB extract) is available.
+
+To re-enable, uncomment the @asset decorators and wire the assets back
+into the Definitions in __init__.py.
+"""
 
 import io
-import json
 from pathlib import Path
 
 import pandas as pd
 import requests
-from dagster import AssetExecutionContext, asset
-
-from tirana_pipeline.resources import MotherDuckResource
+from dagster import AssetExecutionContext
 
 RAW_DIR = Path("/data/raw/opendata")
 
@@ -46,54 +55,39 @@ def _fetch_csv(url: str, name: str, context: AssetExecutionContext) -> pd.DataFr
     return df
 
 
-@asset(group_name="ingestion", description="Download businesses-by-region CSV from opendata.gov.al")
+# ── DISABLED: region-level granularity is too coarse for municipal-unit scope ──
+# Uncomment @asset decorators to re-enable once unit-level data is available.
+
+# @asset(group_name="ingestion", description="Download businesses-by-region CSV from opendata.gov.al")
 def businesses_by_region(context: AssetExecutionContext) -> pd.DataFrame:
     """
     QKB dataset: number of registered businesses per Albanian region (2026).
-    Columns expected: region, count (exact column names may vary — inspect on first run).
+    DISABLED: data is at region level (e.g. whole "Tiranë" region), not
+    at Tirana Municipal Unit level. Cannot be spatially joined to the
+    11 Municipal Unit polygons without disaggregation.
     """
-    df = _fetch_csv(BUSINESS_BY_REGION_URL, "businesses_by_region", context)
-    context.log.info(f"Business-by-region columns: {list(df.columns)}")
-    return df
+    return _fetch_csv(BUSINESS_BY_REGION_URL, "businesses_by_region", context)
 
 
-@asset(
-    group_name="ingestion",
-    description="Download businesses-by-legal-form CSV from opendata.gov.al",
-)
+# @asset(
+#     group_name="ingestion",
+#     description="Download businesses-by-legal-form CSV from opendata.gov.al",
+# )
 def businesses_by_legal_form(context: AssetExecutionContext) -> pd.DataFrame:
-    """QKB dataset: number of registered businesses per legal form (2026)."""
-    df = _fetch_csv(BUSINESS_BY_LEGAL_FORM_URL, "businesses_by_legal_form", context)
-    context.log.info(f"Business-by-legal-form columns: {list(df.columns)}")
-    return df
+    """QKB dataset: number of registered businesses per legal form (2026). DISABLED."""
+    return _fetch_csv(BUSINESS_BY_LEGAL_FORM_URL, "businesses_by_legal_form", context)
 
 
-@asset(
-    group_name="storage",
-    description="Store businesses-by-region in MotherDuck for spatial join in Phase 2",
-)
+# @asset(
+#     group_name="storage",
+#     description="Store businesses-by-region in MotherDuck for spatial join in Phase 2",
+# )
 def businesses_to_db(
     context: AssetExecutionContext,
     businesses_by_region: pd.DataFrame,
-    db: MotherDuckResource,
+    db,
 ) -> None:
     """
-    Persist the region-level business counts to a staging table in MotherDuck.
-    Phase 2 will spatially disaggregate these onto neighbourhood polygons.
+    DISABLED: see module docstring. Will be re-enabled with unit-level POI data.
     """
-    df = businesses_by_region.copy()
-    df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
-
-    rows = [
-        (str(row.get("region", str(idx))), json.dumps(row.to_dict()))
-        for idx, row in df.iterrows()
-    ]
-
-    with db.get_connection() as conn:
-        conn.execute("DELETE FROM staging_businesses_by_region;")
-        conn.executemany(
-            "INSERT INTO staging_businesses_by_region (region, data) VALUES (?, ?::JSON)",
-            rows,
-        )
-
-    context.log.info(f"Stored {len(rows)} regions in staging_businesses_by_region")
+    pass
