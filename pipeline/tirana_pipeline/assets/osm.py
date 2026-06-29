@@ -98,7 +98,7 @@ def neighbourhoods_to_motherduck(
             VALUES (
                 ?,
                 ?,
-                ST_SetSRID(ST_GeomFromText(?), 4326)
+                ST_GeomFromText(?, 'EPSG:4326')
             )
             ON CONFLICT (neighbourhood_id) DO UPDATE SET
                 name = excluded.name,
