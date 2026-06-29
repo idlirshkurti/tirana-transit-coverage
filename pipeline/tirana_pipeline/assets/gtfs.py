@@ -86,33 +86,36 @@ def stops_to_motherduck(
     # Reproject to UTM 34N for metric distance calculations
     stops_utm = gtfs_stops.to_crs("EPSG:32634")
 
-    rows = [
-        (
-            str(row.stop_id),
-            str(row.stop_name),
-            row.geometry.wkt,                   # WGS84
-            stops_utm.loc[idx].geometry.wkt,    # UTM 34N
-        )
+    # Build a flat staging DataFrame with WKT strings.
+    # DuckDB's executemany() fails to bind ST_GeomFromText(?) when mixed
+    # integer/string params are present in the same tuple. The fix is to
+    # register a DataFrame and cast WKT → GEOMETRY inside a SELECT.
+    staging = pd.DataFrame([
+        {
+            "stop_id":   str(row.stop_id),
+            "stop_name": str(row.stop_name),
+            "wkt_wgs84": row.geometry.wkt,
+            "wkt_utm":   stops_utm.loc[idx].geometry.wkt,
+        }
         for idx, row in gtfs_stops.iterrows()
-    ]
+    ])
 
     with db.get_connection() as conn:
         conn.execute("DELETE FROM stops;")
-        conn.executemany(
-            """
+        conn.register("_stops_staging", staging)
+        conn.execute("""
             INSERT INTO stops (stop_id, stop_name, geom, geom_utm)
-            VALUES (
-                ?,
-                ?,
-                ST_SetCRS(ST_GeomFromText(?), 'EPSG:4326'),
-                ST_SetCRS(ST_GeomFromText(?), 'EPSG:32634')
-            )
+            SELECT
+                stop_id,
+                stop_name,
+                ST_GeomFromText(wkt_wgs84),
+                ST_GeomFromText(wkt_utm)
+            FROM _stops_staging
             ON CONFLICT (stop_id) DO UPDATE SET
                 stop_name = excluded.stop_name,
                 geom      = excluded.geom,
                 geom_utm  = excluded.geom_utm
-            """,
-            rows,
-        )
+        """)
+        conn.unregister("_stops_staging")
 
-    context.log.info(f"Upserted {len(rows)} stops into MotherDuck")
+    context.log.info(f"Upserted {len(staging)} stops into MotherDuck")
