@@ -104,8 +104,8 @@ def stops_to_motherduck(
             VALUES (
                 ?,
                 ?,
-                ST_GeomFromText(?, 'EPSG:4326'),
-                ST_GeomFromText(?, 'EPSG:32634')
+                ST_SetCRS(ST_GeomFromText(?), 'EPSG:4326'),
+                ST_SetCRS(ST_GeomFromText(?), 'EPSG:32634')
             )
             ON CONFLICT (stop_id) DO UPDATE SET
                 stop_name = excluded.stop_name,
