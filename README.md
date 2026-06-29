@@ -14,6 +14,14 @@ This project focuses exclusively on Tirana's **11 Municipal Units** (*Njësia Ba
 
 ---
 
+## Coverage Map
+
+![Tirana Municipal Units — Bus Coverage](assets/tirana_municipal_units_map.png)
+
+> 11 Municipal Units · 378 bus stops · 27 routes · Study area only. Routes are shown in their official GTFS colours. Bus stops clipped to the urban core.
+
+---
+
 ## Project Overview
 
 The goal is to identify which of the 11 Municipal Units in Tirana have demand for transit (measured by business/POI density) that outstrips supply (bus stop coverage). The output is a ranked GeoJSON of Municipal Units with gap scores, served through a FastAPI backend and visualised in a Leaflet.js dashboard.
@@ -104,6 +112,8 @@ tirana-transit-coverage/
 ├── docker-compose.yml
 ├── .github/workflows/
 │   └── ci.yml
+├── assets/                     # Static assets & visualisations
+│   └── tirana_municipal_units_map.png
 ├── pipeline/                   # Dagster data pipeline
 │   ├── pyproject.toml
 │   ├── dagster.yaml
