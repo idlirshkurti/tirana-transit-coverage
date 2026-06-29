@@ -58,7 +58,10 @@ def _fetch_csv(url: str, name: str, context: AssetExecutionContext) -> pd.DataFr
 # ── DISABLED: region-level granularity is too coarse for municipal-unit scope ──
 # Uncomment @asset decorators to re-enable once unit-level data is available.
 
-# @asset(group_name="ingestion", description="Download businesses-by-region CSV from opendata.gov.al")
+# @asset(
+#     group_name="ingestion",
+#     description="Download businesses-by-region CSV from opendata.gov.al",
+# )
 def businesses_by_region(context: AssetExecutionContext) -> pd.DataFrame:
     """
     QKB dataset: number of registered businesses per Albanian region (2026).
