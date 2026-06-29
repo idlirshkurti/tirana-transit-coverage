@@ -7,6 +7,7 @@ and fall outside the transit equity study area.
 """
 
 import geopandas as gpd
+import pandas as pd
 from dagster import AssetExecutionContext, asset
 from shapely.geometry import MultiPolygon
 
@@ -49,7 +50,7 @@ def tirana_neighbourhoods(context: AssetExecutionContext) -> gpd.GeoDataFrame:
         gdf = gdf[["geometry", "name"]].dropna(subset=["geometry", "name"])
         gdf = gdf[gdf.geometry.geom_type.isin(["Polygon", "MultiPolygon"])].copy()
 
-    # ── Filter to Municipal Units only ───────────────────────────────────────
+    # ── Filter to Municipal Units only ────────────────────────────────────────────
     gdf = gdf[gdf["name"].str.startswith(MUNICIPAL_UNIT_PREFIX)].copy()
     gdf = gdf.reset_index(drop=True)
     gdf["neighbourhood_id"] = (gdf.index + 1).astype(str)
@@ -79,32 +80,37 @@ def neighbourhoods_to_motherduck(
     db: MotherDuckResource,
 ) -> None:
     """Persist Municipal Unit polygons to MotherDuck `neighbourhoods` table."""
-    rows = []
+    # Normalise to MultiPolygon and collect WKT strings.
+    records = []
     for _, row in tirana_neighbourhoods.iterrows():
         geom = row.geometry
         if geom.geom_type == "Polygon":
             geom = MultiPolygon([geom])
-        rows.append((
-            str(row.neighbourhood_id),
-            str(row["name"]),
-            geom.wkt,
-        ))
+        records.append({
+            "neighbourhood_id": str(row.neighbourhood_id),
+            "name":             str(row["name"]),
+            "wkt":              geom.wkt,
+        })
 
+    staging = pd.DataFrame(records)
+
+    # DuckDB's executemany() fails to bind ST_GeomFromText(?) when mixed
+    # parameter types are present in the same tuple. Fix: register a
+    # DataFrame and cast WKT → GEOMETRY inside a SELECT.
     with db.get_connection() as conn:
         conn.execute("DELETE FROM neighbourhoods;")
-        conn.executemany(
-            """
+        conn.register("_nb_staging", staging)
+        conn.execute("""
             INSERT INTO neighbourhoods (neighbourhood_id, name, geom)
-            VALUES (
-                ?,
-                ?,
-                ST_SetCRS(ST_GeomFromText(?), 'EPSG:4326')
-            )
+            SELECT
+                neighbourhood_id,
+                name,
+                ST_GeomFromText(wkt)
+            FROM _nb_staging
             ON CONFLICT (neighbourhood_id) DO UPDATE SET
                 name = excluded.name,
                 geom = excluded.geom
-            """,
-            rows,
-        )
+        """)
+        conn.unregister("_nb_staging")
 
-    context.log.info(f"Upserted {len(rows)} Municipal Unit polygons into MotherDuck")
+    context.log.info(f"Upserted {len(staging)} Municipal Unit polygons into MotherDuck")
