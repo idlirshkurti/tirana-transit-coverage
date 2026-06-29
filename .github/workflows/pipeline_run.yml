@@ -20,6 +20,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
+    env:
+      MOTHERDUCK_TOKEN: ${{ secrets.MOTHERDUCK_TOKEN }}
+      MOTHERDUCK_DATABASE: tirana_transit
+      DAGSTER_HOME: /tmp/dagster_home
+
     steps:
       - uses: actions/checkout@v4
 
@@ -41,9 +46,6 @@ jobs:
           pip install -e .
 
       - name: Bootstrap MotherDuck schema
-        env:
-          MOTHERDUCK_TOKEN: ${{ secrets.MOTHERDUCK_TOKEN }}
-          MOTHERDUCK_DATABASE: tirana_transit
         run: |
           python - <<'EOF'
           import duckdb, os
@@ -71,10 +73,6 @@ jobs:
           EOF
 
       - name: Materialise all Dagster assets
-        env:
-          MOTHERDUCK_TOKEN: ${{ secrets.MOTHERDUCK_TOKEN }}
-          MOTHERDUCK_DATABASE: tirana_transit
-          DAGSTER_HOME: /tmp/dagster_home
         run: |
           mkdir -p $DAGSTER_HOME
           cd pipeline
@@ -83,9 +81,6 @@ jobs:
             -m tirana_pipeline
 
       - name: Verify row counts in MotherDuck
-        env:
-          MOTHERDUCK_TOKEN: ${{ secrets.MOTHERDUCK_TOKEN }}
-          MOTHERDUCK_DATABASE: tirana_transit
         run: |
           python - <<'EOF'
           import duckdb, os
