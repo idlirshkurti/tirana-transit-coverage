@@ -101,7 +101,12 @@ def stops_to_motherduck(
         conn.executemany(
             """
             INSERT INTO stops (stop_id, stop_name, geom, geom_utm)
-            VALUES (?, ?, ST_GeomFromText(?, 4326), ST_GeomFromText(?, 32634))
+            VALUES (
+                ?,
+                ?,
+                ST_SetSRID(ST_GeomFromText(?), 4326),
+                ST_SetSRID(ST_GeomFromText(?), 32634)
+            )
             ON CONFLICT (stop_id) DO UPDATE SET
                 stop_name = excluded.stop_name,
                 geom      = excluded.geom,

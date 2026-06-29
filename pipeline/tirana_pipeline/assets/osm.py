@@ -95,7 +95,11 @@ def neighbourhoods_to_motherduck(
         conn.executemany(
             """
             INSERT INTO neighbourhoods (neighbourhood_id, name, geom)
-            VALUES (?, ?, ST_GeomFromText(?, 4326))
+            VALUES (
+                ?,
+                ?,
+                ST_SetSRID(ST_GeomFromText(?), 4326)
+            )
             ON CONFLICT (neighbourhood_id) DO UPDATE SET
                 name = excluded.name,
                 geom = excluded.geom
