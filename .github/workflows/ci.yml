@@ -42,3 +42,13 @@ jobs:
         run: |
           cd pipeline
           pytest tests/ -v --tb=short
+
+      - name: Materialise ingestion assets (no storage)
+        run: |
+          mkdir -p $DAGSTER_HOME
+          cd pipeline
+          dagster asset materialize \
+            --select "gtfs_raw+,tirana_neighbourhoods" \
+            -m tirana_pipeline
+        env:
+          DAGSTER_HOME: /tmp/dagster_home

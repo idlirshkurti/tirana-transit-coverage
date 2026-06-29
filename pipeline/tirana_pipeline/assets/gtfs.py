@@ -1,6 +1,7 @@
 """GTFS ingestion asset — downloads Tirana bus feed and stores stops + routes to MotherDuck."""
 
 import io
+import os
 import zipfile
 from pathlib import Path
 
@@ -12,7 +13,15 @@ from dagster import AssetExecutionContext, asset
 from tirana_pipeline.resources import MotherDuckResource
 
 GTFS_URL = "https://pt.tirana.al/gtfs/gtfs.zip"
-RAW_DIR = Path("/data/raw/gtfs")
+
+# Use $DAGSTER_HOME/raw/gtfs when available (Docker / local dev),
+# otherwise fall back to a temp dir that is always writable (CI).
+_dagster_home = os.environ.get("DAGSTER_HOME", "")
+RAW_DIR = (
+    Path(_dagster_home) / "raw" / "gtfs"
+    if _dagster_home
+    else Path(os.environ.get("RUNNER_TEMP", "/tmp")) / "raw" / "gtfs"
+)
 
 
 @asset(group_name="ingestion", description="Download GTFS feed ZIP from Tirana transit portal")
@@ -26,7 +35,9 @@ def gtfs_raw(context: AssetExecutionContext) -> bytes:
     response.raise_for_status()
 
     cached.write_bytes(response.content)
-    context.log.info(f"Saved GTFS ZIP ({len(response.content) / 1024:.1f} KB) to {cached}")
+    context.log.info(
+        f"Saved GTFS ZIP ({len(response.content) / 1024:.1f} KB) to {cached}"
+    )
     return response.content
 
 
@@ -79,8 +90,8 @@ def stops_to_motherduck(
         (
             str(row.stop_id),
             str(row.stop_name),
-            row.geometry.wkt,          # WGS84
-            stops_utm.loc[idx].geometry.wkt,  # UTM 34N
+            row.geometry.wkt,                   # WGS84
+            stops_utm.loc[idx].geometry.wkt,    # UTM 34N
         )
         for idx, row in gtfs_stops.iterrows()
     ]
