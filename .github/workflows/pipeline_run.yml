@@ -73,6 +73,15 @@ jobs:
                 geom             GEOMETRY
             );
           """)
+          conn.execute("""
+            CREATE TABLE IF NOT EXISTS routes (
+                route_id   VARCHAR PRIMARY KEY,
+                route_name VARCHAR,
+                route_type INTEGER,
+                agency_id  VARCHAR,
+                shape      GEOMETRY
+            );
+          """)
           conn.close()
           print("Schema bootstrap complete.")
           EOF
@@ -93,7 +102,7 @@ jobs:
           db    = os.environ["MOTHERDUCK_DATABASE"]
           conn  = duckdb.connect(f"md:{db}?motherduck_token={token}")
           conn.execute("LOAD spatial;")
-          for table in ["stops", "neighbourhoods"]:
+          for table in ["stops", "neighbourhoods", "routes"]:
               count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
               print(f"{table}: {count} rows")
               if count == 0:
