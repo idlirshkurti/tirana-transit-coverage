@@ -119,3 +119,60 @@ def stops_to_motherduck(
         conn.unregister("_stops_staging")
 
     context.log.info(f"Upserted {len(staging)} stops into MotherDuck")
+
+
+@asset(
+    group_name="storage",
+    description="Write GTFS routes to MotherDuck",
+)
+def routes_to_motherduck(
+    context: AssetExecutionContext,
+    gtfs_routes: pd.DataFrame,
+    db: MotherDuckResource,
+) -> None:
+    """Upsert GTFS routes into the MotherDuck `routes` table.
+
+    Maps routes.txt columns to the existing schema:
+        route_id   -> route_id   (VARCHAR PRIMARY KEY)
+        route_name -> route_name (VARCHAR)  -- prefers route_long_name, falls back to route_short_name
+        route_type -> route_type (INTEGER)
+        agency_id  -> agency_id  (VARCHAR)
+        shape      -> NULL       (GEOMETRY, populated by a separate shapes asset if needed)
+    """
+    # Resolve route_name: prefer long name, fall back to short name
+    if "route_long_name" in gtfs_routes.columns:
+        route_name = gtfs_routes["route_long_name"].fillna(
+            gtfs_routes.get("route_short_name", "")
+        )
+    elif "route_short_name" in gtfs_routes.columns:
+        route_name = gtfs_routes["route_short_name"]
+    else:
+        route_name = pd.Series([""] * len(gtfs_routes))
+
+    staging = pd.DataFrame({
+        "route_id":   gtfs_routes["route_id"].astype(str),
+        "route_name": route_name.astype(str),
+        "route_type": gtfs_routes["route_type"].astype(int) if "route_type" in gtfs_routes.columns else 3,
+        "agency_id":  gtfs_routes["agency_id"].astype(str) if "agency_id" in gtfs_routes.columns else "",
+    })
+
+    with db.get_connection() as conn:
+        conn.execute("DELETE FROM routes;")
+        conn.register("_routes_staging", staging)
+        conn.execute("""
+            INSERT INTO routes (route_id, route_name, route_type, agency_id, shape)
+            SELECT
+                route_id,
+                route_name,
+                route_type,
+                agency_id,
+                NULL AS shape
+            FROM _routes_staging
+            ON CONFLICT (route_id) DO UPDATE SET
+                route_name = excluded.route_name,
+                route_type = excluded.route_type,
+                agency_id  = excluded.agency_id
+        """)
+        conn.unregister("_routes_staging")
+
+    context.log.info(f"Upserted {len(staging)} routes into MotherDuck")
