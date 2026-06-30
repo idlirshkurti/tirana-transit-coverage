@@ -9,6 +9,7 @@ import geopandas as gpd
 import pandas as pd
 import requests
 from dagster import AssetExecutionContext, asset
+from shapely.geometry import LineString, MultiLineString
 
 from tirana_pipeline.resources import MotherDuckResource
 
@@ -71,6 +72,111 @@ def gtfs_routes(context: AssetExecutionContext, gtfs_raw: bytes) -> pd.DataFrame
 
     context.log.info(f"Parsed {len(routes_df)} routes from GTFS feed")
     return routes_df
+
+
+@asset(group_name="ingestion", description="Parse GTFS trips into a DataFrame")
+def gtfs_trips(context: AssetExecutionContext, gtfs_raw: bytes) -> pd.DataFrame:
+    """Extract trips.txt from GTFS ZIP.
+
+    Returns a DataFrame with at least route_id and shape_id columns,
+    providing the many-to-many mapping between routes and shapes.
+    """
+    with zipfile.ZipFile(io.BytesIO(gtfs_raw)) as zf:
+        names = zf.namelist()
+        if "trips.txt" not in names:
+            context.log.warning("trips.txt not found in GTFS ZIP — returning empty DataFrame")
+            return pd.DataFrame(columns=["route_id", "shape_id"])
+        with zf.open("trips.txt") as f:
+            trips_df = pd.read_csv(f)
+
+    required = {"route_id", "shape_id"}
+    missing = required - set(trips_df.columns)
+    if missing:
+        context.log.warning(f"trips.txt missing columns {missing} — shape geometry will be NULL")
+        for col in missing:
+            trips_df[col] = None
+
+    context.log.info(f"Parsed {len(trips_df)} trips from GTFS feed")
+    return trips_df[["route_id", "shape_id"]].drop_duplicates()
+
+
+@asset(group_name="ingestion", description="Parse GTFS shapes into a GeoDataFrame of route lines")
+def gtfs_shapes(
+    context: AssetExecutionContext,
+    gtfs_raw: bytes,
+    gtfs_trips: pd.DataFrame,
+) -> gpd.GeoDataFrame:
+    """Build per-route LineString/MultiLineString geometries from shapes.txt.
+
+    Pipeline:
+        shapes.txt  (shape_id, seq, lat, lon)
+          -> sort by shape_pt_sequence
+          -> build one LineString per shape_id
+          -> join trips to map shape_id -> route_id
+          -> dissolve into MultiLineString per route_id
+    Returns a GeoDataFrame with columns [route_id, geometry] in EPSG:4326.
+    """
+    with zipfile.ZipFile(io.BytesIO(gtfs_raw)) as zf:
+        names = zf.namelist()
+        if "shapes.txt" not in names:
+            context.log.warning("shapes.txt not found in GTFS ZIP — no route geometry available")
+            return gpd.GeoDataFrame(columns=["route_id", "geometry"], geometry="geometry",
+                                    crs="EPSG:4326")
+        with zf.open("shapes.txt") as f:
+            shapes_df = pd.read_csv(f)
+
+    required = {"shape_id", "shape_pt_lat", "shape_pt_lon", "shape_pt_sequence"}
+    missing = required - set(shapes_df.columns)
+    if missing:
+        raise ValueError(f"shapes.txt missing required columns: {missing}")
+
+    # Sort and build one LineString per shape_id
+    shapes_df = shapes_df.sort_values(["shape_id", "shape_pt_sequence"])
+
+    def _build_line(grp: pd.DataFrame) -> LineString | None:
+        coords = list(zip(grp["shape_pt_lon"], grp["shape_pt_lat"]))
+        if len(coords) < 2:
+            return None
+        return LineString(coords)
+
+    shape_lines = (
+        shapes_df.groupby("shape_id")
+        .apply(_build_line, include_groups=False)
+        .dropna()
+        .reset_index()
+        .rename(columns={0: "geometry"})
+    )
+    context.log.info(f"Built {len(shape_lines)} shape LineStrings")
+
+    # Join trips to get route_id -> shape_id mapping
+    trips_clean = gtfs_trips.dropna(subset=["shape_id"])
+    if trips_clean.empty:
+        context.log.warning("No valid shape_id values in trips — returning empty GeoDataFrame")
+        return gpd.GeoDataFrame(columns=["route_id", "geometry"], geometry="geometry",
+                                crs="EPSG:4326")
+
+    merged = trips_clean.merge(shape_lines, on="shape_id", how="inner")
+
+    # Dissolve: one MultiLineString per route_id
+    def _dissolve_route(grp: pd.DataFrame):
+        lines = [g for g in grp["geometry"] if g is not None]
+        if not lines:
+            return None
+        if len(lines) == 1:
+            return lines[0]
+        return MultiLineString(lines)
+
+    route_geoms = (
+        merged.groupby("route_id")
+        .apply(_dissolve_route, include_groups=False)
+        .dropna()
+        .reset_index()
+        .rename(columns={0: "geometry"})
+    )
+    context.log.info(f"Dissolved into {len(route_geoms)} per-route geometries")
+
+    gdf = gpd.GeoDataFrame(route_geoms, geometry="geometry", crs="EPSG:4326")
+    return gdf
 
 
 @asset(
@@ -138,7 +244,7 @@ def routes_to_motherduck(
             -- prefers route_long_name, falls back to route_short_name
         route_type -> route_type (INTEGER)
         agency_id  -> agency_id  (VARCHAR)
-        shape      -> NULL       (GEOMETRY, populated by a separate shapes asset if needed)
+        shape      -> NULL       (GEOMETRY, populated by shapes_to_motherduck)
     """
     # Resolve route_name: prefer long name, fall back to short name
     if "route_long_name" in gtfs_routes.columns:
@@ -187,3 +293,44 @@ def routes_to_motherduck(
         conn.unregister("_routes_staging")
 
     context.log.info(f"Upserted {len(staging)} routes into MotherDuck")
+
+
+@asset(
+    group_name="storage",
+    description="Write per-route geometries to MotherDuck routes.shape column",
+    deps=["routes_to_motherduck"],
+)
+def shapes_to_motherduck(
+    context: AssetExecutionContext,
+    gtfs_shapes: gpd.GeoDataFrame,
+    db: MotherDuckResource,
+) -> None:
+    """Update routes.shape with MultiLineString geometries built from shapes.txt.
+
+    Depends on routes_to_motherduck so rows exist before we UPDATE them.
+    Only routes with a matching shape_id chain are updated; the rest remain NULL.
+    """
+    if gtfs_shapes.empty:
+        context.log.warning("gtfs_shapes is empty — no route geometry to write")
+        return
+
+    staging = pd.DataFrame({
+        "route_id": gtfs_shapes["route_id"].astype(str),
+        "wkt":      gtfs_shapes["geometry"].apply(lambda g: g.wkt if g is not None else None),
+    }).dropna(subset=["wkt"])
+
+    if staging.empty:
+        context.log.warning("All shape geometries are None — skipping update")
+        return
+
+    with db.get_connection() as conn:
+        conn.register("_shapes_staging", staging)
+        conn.execute("""
+            UPDATE routes
+            SET shape = ST_GeomFromText(s.wkt)
+            FROM _shapes_staging s
+            WHERE routes.route_id = s.route_id
+        """)
+        conn.unregister("_shapes_staging")
+
+    context.log.info(f"Updated shape geometry for {len(staging)} routes in MotherDuck")
