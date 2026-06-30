@@ -134,7 +134,8 @@ def routes_to_motherduck(
 
     Maps routes.txt columns to the existing schema:
         route_id   -> route_id   (VARCHAR PRIMARY KEY)
-        route_name -> route_name (VARCHAR)  -- prefers route_long_name, falls back to route_short_name
+        route_name -> route_name (VARCHAR)
+            -- prefers route_long_name, falls back to route_short_name
         route_type -> route_type (INTEGER)
         agency_id  -> agency_id  (VARCHAR)
         shape      -> NULL       (GEOMETRY, populated by a separate shapes asset if needed)
@@ -149,11 +150,21 @@ def routes_to_motherduck(
     else:
         route_name = pd.Series([""] * len(gtfs_routes))
 
+    route_type = (
+        gtfs_routes["route_type"].astype(int)
+        if "route_type" in gtfs_routes.columns
+        else 3
+    )
+    agency_id = (
+        gtfs_routes["agency_id"].astype(str)
+        if "agency_id" in gtfs_routes.columns
+        else ""
+    )
     staging = pd.DataFrame({
         "route_id":   gtfs_routes["route_id"].astype(str),
         "route_name": route_name.astype(str),
-        "route_type": gtfs_routes["route_type"].astype(int) if "route_type" in gtfs_routes.columns else 3,
-        "agency_id":  gtfs_routes["agency_id"].astype(str) if "agency_id" in gtfs_routes.columns else "",
+        "route_type": route_type,
+        "agency_id":  agency_id,
     })
 
     with db.get_connection() as conn:
