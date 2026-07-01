@@ -10,7 +10,6 @@ from pathlib import Path
 import geopandas as gpd
 import pandas as pd
 from dagster import AssetExecutionContext, asset
-from shapely.geometry import mapping
 from shapely.ops import unary_union
 
 from tirana_pipeline.resources import MotherDuckResource
@@ -27,7 +26,7 @@ ISOCHRONE_RADIUS_M = 400  # walking buffer radius in metres
 @asset(
     group_name="analysis",
     description=(
-        f"Generate {ISOCHRONAL_RADIUS_M}m walking-buffer isochrones around each bus stop "
+        f"Generate {ISOCHRONE_RADIUS_M}m walking-buffer isochrones around each bus stop "
         "in UTM 34N (EPSG:32634)."
     ),
 )
@@ -118,7 +117,6 @@ def neighbourhood_demand(
 
     context.log.info("Fetching OSM amenities for Tirana...")
 
-    # Fetch amenity POIs within Tirana bounding box
     amenity_tags = {"amenity": True}
     try:
         pois = ox.features_from_place("Tirana, Albania", tags=amenity_tags)
@@ -133,7 +131,6 @@ def neighbourhood_demand(
         result["student_count"] = 0.0
         return result
 
-    # Spatially join POIs to neighbourhoods
     joined = gpd.sjoin(
         pois.reset_index(drop=True),
         neighbourhood_geodataframe[["neighbourhood_id", "geometry"]],
@@ -141,7 +138,6 @@ def neighbourhood_demand(
         predicate="within",
     )
 
-    # Education amenities proxy student demand
     education_types = {"school", "university", "college", "kindergarten", "language_school"}
     joined["is_education"] = joined["amenity"].isin(education_types)
 
@@ -197,12 +193,10 @@ def coverage_scores(
     """
     nb = neighbourhood_geodataframe.copy()
 
-    # Guard: skip neighbourhoods with null/zero-area geometries
     nb = nb[nb.geometry.notna() & (nb.geometry.area > 0)].copy()
     if nb.empty:
         raise RuntimeError("All neighbourhood geometries are null or zero-area.")
 
-    # Build union of all isochrones (the total 'served area')
     if stop_isochrones.empty:
         context.log.warning("No isochrones — coverage_ratio will be 0 for all neighbourhoods")
         isochrone_union = None
@@ -212,7 +206,6 @@ def coverage_scores(
             f"Isochrone union area: {isochrone_union.area / 1e6:.2f} km²"
         )
 
-    # 2.3 Coverage ratio
     def _coverage_ratio(neighbourhood_geom):
         if isochrone_union is None:
             return 0.0
@@ -224,12 +217,11 @@ def coverage_scores(
 
     nb["coverage_ratio"] = nb.geometry.apply(_coverage_ratio).clip(0.0, 1.0)
 
-    # 2.4 Normalise demand + gap score
     nb = nb.merge(neighbourhood_demand, on="neighbourhood_id", how="left")
     nb["business_count"] = nb["business_count"].fillna(0.0)
     nb["student_count"] = nb["student_count"].fillna(0.0)
 
-    nb_area_km2 = nb.geometry.area / 1e6  # km²
+    nb_area_km2 = nb.geometry.area / 1e6
     nb["business_density"] = nb["business_count"] / nb_area_km2.replace(0, float("nan"))
     nb["student_density"] = nb["student_count"] / nb_area_km2.replace(0, float("nan"))
     nb["business_density"] = nb["business_density"].fillna(0.0)
@@ -251,14 +243,12 @@ def coverage_scores(
         f"{nb.iloc[0]['name']} (gap_score={nb.iloc[0]['gap_score']:.3f})"
     )
 
-    # Persist to MotherDuck using staging-swap
     records = nb[[
         "neighbourhood_id", "business_density", "student_density",
         "coverage_ratio", "gap_score",
     ]].copy()
 
     with db.get_connection() as conn:
-        # Ensure table exists
         conn.execute("""
             CREATE TABLE IF NOT EXISTS coverage_scores (
                 neighbourhood_id  VARCHAR PRIMARY KEY,
@@ -323,8 +313,6 @@ def gap_scores_geojson(
         "business_density", "student_density", "geometry",
     ]].copy()
 
-    # Reproject back to WGS84 for web map consumption
     export = export.to_crs("EPSG:4326")
-
     export.to_file(output_path, driver="GeoJSON")
     context.log.info(f"Exported {len(export)} neighbourhoods to {output_path}")

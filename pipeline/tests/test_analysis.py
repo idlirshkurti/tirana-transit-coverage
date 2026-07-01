@@ -3,7 +3,6 @@
 import math
 
 import geopandas as gpd
-import numpy as np
 import pandas as pd
 import pytest
 from shapely.geometry import Point, Polygon
@@ -30,7 +29,7 @@ def sample_neighbourhoods() -> gpd.GeoDataFrame:
             "neighbourhood_id": ["n1", "n2"],
             "name": ["Alpha", "Beta"],
             "geometry": [
-                _square_neighbourhood(0, 0, 500),   # n1: x in [-500, 500], y in [-500, 500]
+                _square_neighbourhood(0, 0, 500),    # n1: x in [-500, 500]
                 _square_neighbourhood(1200, 0, 500), # n2: no overlap with n1
             ],
         },
@@ -85,10 +84,7 @@ class TestIsochrones:
 
 class TestCoverageRatio:
     def test_full_coverage(self, sample_neighbourhoods, sample_stops):
-        """A 400m buffer fully covers the 500m-half-side square (area = 1 km²).
-        The circle of radius 400 m (area ≈ 0.5 km²) is smaller than the square—
-        intersection area must be > 0 and < neighbourhood area.
-        """
+        """A 400m buffer overlaps the 500m-half-side square — ratio must be in (0, 1]."""
         from shapely.ops import unary_union
         isochrones = sample_stops.copy()
         isochrones["geometry"] = isochrones.geometry.buffer(400)
@@ -103,7 +99,7 @@ class TestCoverageRatio:
         assert nb.loc[nb.neighbourhood_id == "n1", "coverage_ratio"].iloc[0] <= 1.0
 
     def test_zero_coverage(self, sample_neighbourhoods, sample_stops):
-        """n2 has no stop nearby — coverage_ratio should be 0."""
+        """n2 has no stop nearby — intersection area should be 0."""
         from shapely.ops import unary_union
         isochrones = sample_stops.copy()
         isochrones["geometry"] = isochrones.geometry.buffer(400)
@@ -114,11 +110,7 @@ class TestCoverageRatio:
         assert ratio_n2 == pytest.approx(0.0)
 
     def test_null_geometry_handled(self):
-        """Neighbourhoods with null geometry should return coverage_ratio=0, not raise."""
-        from shapely.geometry import Point
-        from shapely.ops import unary_union
-        union = Point(0, 0).buffer(400)
-        # Simulate the guard condition
+        """Neighbourhoods with null geometry should be filtered out, not raise."""
         nb = gpd.GeoDataFrame(
             {"neighbourhood_id": ["n_null"], "geometry": [None]},
             crs="EPSG:32634",
@@ -126,7 +118,7 @@ class TestCoverageRatio:
         valid = nb[nb.geometry.notna() & nb.geometry.apply(
             lambda g: g is not None and g.area > 0
         )]
-        assert len(valid) == 0  # null row is filtered out safely
+        assert len(valid) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +161,11 @@ class TestGapScore:
         """Constant series (range=0) should return all zeros, not NaN."""
         series = pd.Series([5.0, 5.0, 5.0])
         rng = series.max() - series.min()
-        normalised = (series - series.min()) / rng if rng > 0 else pd.Series(0.0, index=series.index)
+        normalised = (
+            (series - series.min()) / rng
+            if rng > 0
+            else pd.Series(0.0, index=series.index)
+        )
         assert all(normalised == 0.0)
 
 
