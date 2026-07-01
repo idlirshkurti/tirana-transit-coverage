@@ -79,7 +79,13 @@ def neighbourhoods_to_motherduck(
     tirana_neighbourhoods: gpd.GeoDataFrame,
     db: MotherDuckResource,
 ) -> None:
-    """Persist Municipal Unit polygons to MotherDuck `neighbourhoods` table."""
+    """Persist Municipal Unit polygons to MotherDuck `neighbourhoods` table.
+
+    Uses a staging-swap pattern for atomic writes:
+    1. Write all new rows into `neighbourhoods_staging` (schema clone).
+    2. Inside a single transaction: DROP live table, RENAME staging -> live.
+    3. On any failure: ROLLBACK and clean up staging — previous data is preserved.
+    """
     # Normalise to MultiPolygon and collect WKT strings.
     records = []
     for _, row in tirana_neighbourhoods.iterrows():
@@ -96,21 +102,33 @@ def neighbourhoods_to_motherduck(
 
     # DuckDB's executemany() fails to bind ST_GeomFromText(?) when mixed
     # parameter types are present in the same tuple. Fix: register a
-    # DataFrame and cast WKT → GEOMETRY inside a SELECT.
+    # DataFrame and cast WKT -> GEOMETRY inside a SELECT.
     with db.get_connection() as conn:
-        conn.execute("DELETE FROM neighbourhoods;")
+        # Create empty staging table with same schema as neighbourhoods
+        conn.execute(
+            "CREATE OR REPLACE TABLE neighbourhoods_staging "
+            "AS SELECT * FROM neighbourhoods WHERE 1=0;"
+        )
         conn.register("_nb_staging", staging)
         conn.execute("""
-            INSERT INTO neighbourhoods (neighbourhood_id, name, geom)
+            INSERT INTO neighbourhoods_staging (neighbourhood_id, name, geom)
             SELECT
                 neighbourhood_id,
                 name,
                 ST_GeomFromText(wkt)
             FROM _nb_staging
-            ON CONFLICT (neighbourhood_id) DO UPDATE SET
-                name = excluded.name,
-                geom = excluded.geom
         """)
         conn.unregister("_nb_staging")
 
-    context.log.info(f"Upserted {len(staging)} Municipal Unit polygons into MotherDuck")
+        # Atomic swap: live table is never empty at any point
+        conn.execute("BEGIN;")
+        try:
+            conn.execute("DROP TABLE neighbourhoods;")
+            conn.execute("ALTER TABLE neighbourhoods_staging RENAME TO neighbourhoods;")
+            conn.execute("COMMIT;")
+        except Exception:
+            conn.execute("ROLLBACK;")
+            conn.execute("DROP TABLE IF EXISTS neighbourhoods_staging;")
+            raise
+
+    context.log.info(f"Atomically swapped {len(staging)} Municipal Unit polygons into MotherDuck")
