@@ -21,11 +21,11 @@ CREATE TABLE IF NOT EXISTS routes (
     shape       GEOMETRY  -- EPSG:4326 LineString
 );
 
--- 400 m walking isochrones (buffers) per stop
+-- 400 m walking isochrones (buffers) per stop — stored in EPSG:32634 (UTM 34N)
 CREATE TABLE IF NOT EXISTS isochrones (
     stop_id   VARCHAR,
     radius_m  INTEGER,
-    geom      GEOMETRY,  -- EPSG:4326 Polygon
+    geom      GEOMETRY,  -- EPSG:32634 Polygon
     PRIMARY KEY (stop_id, radius_m)
 );
 
@@ -42,12 +42,20 @@ CREATE TABLE IF NOT EXISTS staging_businesses_by_region (
     data    JSON
 );
 
+-- Phase 2: neighbourhood demand from OSM POI spatial join
+CREATE TABLE IF NOT EXISTS neighbourhood_demand (
+    neighbourhood_id  VARCHAR PRIMARY KEY REFERENCES neighbourhoods(neighbourhood_id),
+    business_count    DOUBLE,
+    student_count     DOUBLE,
+    computed_at       TIMESTAMPTZ DEFAULT now()
+);
+
 -- Final computed gap scores per neighbourhood
 CREATE TABLE IF NOT EXISTS coverage_scores (
     neighbourhood_id  VARCHAR PRIMARY KEY,
     business_density  DOUBLE,
     student_density   DOUBLE,
     coverage_ratio    DOUBLE,
-    gap_score         DOUBLE,  -- = (business_density + student_density) / (coverage_ratio + ε)
+    gap_score         DOUBLE,  -- = (norm_business_density + norm_student_density) / (coverage_ratio + ε)
     computed_at       TIMESTAMPTZ DEFAULT now()
 );

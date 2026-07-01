@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tirana-pipeline"
-version = "0.2.0"
+version = "0.3.0"
 description = "Dagster pipeline for Tirana transit coverage analysis"
 requires-python = ">=3.11"
 dependencies = [
@@ -15,6 +15,7 @@ dependencies = [
     "geopandas>=0.14",
     "shapely>=2.0",
     "osmnx>=1.9",
+    "networkx>=3.0",
     "gtfs-kit>=6.0",
     "pandas>=2.0",
     "requests>=2.31",
