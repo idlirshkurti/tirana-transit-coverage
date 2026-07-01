@@ -188,14 +188,20 @@ def stops_to_motherduck(
     gtfs_stops: gpd.GeoDataFrame,
     db: MotherDuckResource,
 ) -> None:
-    """Upsert GTFS stops into the MotherDuck `stops` table using DuckDB spatial."""
+    """Upsert GTFS stops into the MotherDuck `stops` table using DuckDB spatial.
+
+    Uses a staging-swap pattern for atomic writes:
+    1. Write all new rows into `stops_staging` (schema clone of `stops`).
+    2. Inside a single transaction: DROP live table, RENAME staging -> live.
+    3. On any failure: ROLLBACK and clean up staging — previous data is preserved.
+    """
     # Reproject to UTM 34N for metric distance calculations
     stops_utm = gtfs_stops.to_crs("EPSG:32634")
 
     # Build a flat staging DataFrame with WKT strings.
     # DuckDB's executemany() fails to bind ST_GeomFromText(?) when mixed
     # integer/string params are present in the same tuple. The fix is to
-    # register a DataFrame and cast WKT → GEOMETRY inside a SELECT.
+    # register a DataFrame and cast WKT -> GEOMETRY inside a SELECT.
     staging = pd.DataFrame([
         {
             "stop_id":   str(row.stop_id),
@@ -207,24 +213,32 @@ def stops_to_motherduck(
     ])
 
     with db.get_connection() as conn:
-        conn.execute("DELETE FROM stops;")
+        # Create empty staging table with same schema as stops
+        conn.execute("CREATE OR REPLACE TABLE stops_staging AS SELECT * FROM stops WHERE 1=0;")
         conn.register("_stops_staging", staging)
         conn.execute("""
-            INSERT INTO stops (stop_id, stop_name, geom, geom_utm)
+            INSERT INTO stops_staging (stop_id, stop_name, geom, geom_utm)
             SELECT
                 stop_id,
                 stop_name,
                 ST_GeomFromText(wkt_wgs84),
                 ST_GeomFromText(wkt_utm)
             FROM _stops_staging
-            ON CONFLICT (stop_id) DO UPDATE SET
-                stop_name = excluded.stop_name,
-                geom      = excluded.geom,
-                geom_utm  = excluded.geom_utm
         """)
         conn.unregister("_stops_staging")
 
-    context.log.info(f"Upserted {len(staging)} stops into MotherDuck")
+        # Atomic swap: live table is never empty at any point
+        conn.execute("BEGIN;")
+        try:
+            conn.execute("DROP TABLE stops;")
+            conn.execute("ALTER TABLE stops_staging RENAME TO stops;")
+            conn.execute("COMMIT;")
+        except Exception:
+            conn.execute("ROLLBACK;")
+            conn.execute("DROP TABLE IF EXISTS stops_staging;")
+            raise
+
+    context.log.info(f"Atomically swapped {len(staging)} stops into MotherDuck")
 
 
 @asset(
